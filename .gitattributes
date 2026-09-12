@@ -1,0 +1,7 @@
+# Check out every text file with LF, whatever core.autocrlf says.
+#
+# The committed files are LF, but Git for Windows defaults to autocrlf=true,
+# which rewrote all of them to CRLF on clone. The smoke test
+# test_no_python_source_uses_crlf then failed on every fresh Windows checkout,
+# and a CRLF shell-invoked script is a real runtime failure on POSIX.
+* text=auto eol=lf
