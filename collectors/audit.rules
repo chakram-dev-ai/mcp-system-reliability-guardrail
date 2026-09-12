@@ -1,0 +1,43 @@
+# Linux ground-truth rules. Install with:  auditctl -R collectors/audit.rules
+# Scope to the agent's uid so you are not auditing the whole box.
+# Find it with: id -u agent   (1001 below is a placeholder)
+
+-a always,exit -F arch=b64 -S execve,execveat -F auid=1001 -k gm-exec
+-a always,exit -F arch=b64 -S connect -F auid=1001 -k gm-net
+
+# Credential stores: watch the paths, not the syscalls, so a rename cannot dodge it.
+-w /home/agent/.ssh/           -p rwa -k gm-file-cred
+-w /home/agent/.aws/           -p rwa -k gm-file-cred
+-w /home/agent/.config/gcloud/ -p rwa -k gm-file-cred
+
+# The monitor's own config and log. If the agent touches these, that IS the alert.
+-w /etc/gm/policy.yaml -p wa -k gm-file-tamper
+-w /var/log/gm/        -p wa -k gm-file-tamper
+
+# --- canary coverage --------------------------------------------------------
+# These are PATH watches, not auid-scoped syscall rules, and that is the whole
+# point: run_probe_suite fires from the monitor process, under the monitor's
+# account, so anything scoped with `-F auid=1001` filters the probe out and
+# reports FAIL for a control that is working fine. A path watch catches the
+# canary from either account.
+#
+# Without these the file-read and containment probes can never pass, which is
+# indistinguishable from a genuinely dead control -- see DESIGN.md 6.2.
+# Adjust the paths to match `canary_dir` in policy.yaml.
+-w /home/agent/.gm-canaries/                -p rwa -k gm-file-canary
+-w /home/agent/.gm-canaries/gm-canary-exec  -p x   -k gm-exec-canary
+
+# The containment probe writes here on purpose: a sibling of the canary dir,
+# so it is outside the workspace AND outside the allowlisted canary dir, while
+# still being one specific path you can watch without burying the log.
+-w /home/agent/.gm-canaries-escape/         -p wa  -k gm-file-canary
+
+# The egress canary is a connect(), and connect is only reachable as a syscall
+# rule -- there is no path to watch. If you run the probes from the monitor
+# account (the default when you call the MCP tool), uncomment this with the
+# monitor's auid, or run the suite as the agent instead. Leaving both off means
+# canary.net reports FAIL forever.
+# -a always,exit -F arch=b64 -S connect -F auid=1002 -k gm-net
+
+# Make the ruleset immutable until reboot. Do this LAST, after you have tested.
+# -e 2

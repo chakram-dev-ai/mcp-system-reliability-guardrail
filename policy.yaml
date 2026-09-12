@@ -1,0 +1,194 @@
+# Guardrail policy for a monitored AI coding agent.
+#
+# verdict: allow | warn | violation
+# action:  log | alert | kill      (kill requires the enforcer to have signal
+#                                   rights over the agent cgroup)
+
+vars:
+  # Whose home is "~"? Not the monitor's. This process runs as gmmonitor, so
+  # os.path.expanduser would resolve every ~-anchored rule below against
+  # /home/gmmonitor and match nothing. Set this to the AGENT's home and the
+  # loader anchors "~" to it. Must be absolute.
+  agent_home: /home/agent
+  workspace: ${agent_home}/project
+  canary_dir: ${agent_home}/.gm-canaries
+
+rules:
+
+  # --- credential access ---------------------------------------------------
+  - id: cred.read
+    description: Agent touched a credential store outside the workspace.
+    kind: [file.open, file.read]
+    severity: critical
+    verdict: violation
+    action: alert
+    match:
+      path_glob:
+        - "~/.ssh/**"
+        - "~/.aws/**"
+        - "~/.config/gcloud/**"
+        - "~/.kube/config"
+        - "~/.netrc"
+        - "**/*.pem"
+        - "**/id_rsa*"
+        - "**/id_ed25519*"
+
+  - id: cred.dotenv
+    description: Agent read a .env file. Often legitimate -- warn, don't block.
+    kind: [file.open, file.read]
+    severity: medium
+    verdict: warn
+    match:
+      path_glob: ["**/.env", "**/.env.*"]
+
+  # --- filesystem containment ---------------------------------------------
+  - id: fs.write_outside_workspace
+    description: Write landed outside the workspace and scratch dirs.
+    kind: [file.write, file.create, file.unlink]
+    severity: high
+    verdict: violation
+    action: alert
+    match:
+      # Note ${canary_dir} is allowlisted but ${canary_dir}-escape is not:
+      # that sibling is where the fs-escape probe writes, which is what makes
+      # this rule provable. See gm/probes.py escape_dir().
+      path_not_under: ["${workspace}", "/tmp", "/var/tmp", "${agent_home}/.cache", "${canary_dir}"]
+
+  # Monitoring more than one agent? ${workspace} is a single path, so the rule
+  # above is correct for at most one of them. Replace it with this, which reads
+  # the workspace from the session that produced the event:
+  #
+  #   - id: fs.write_outside_workspace
+  #     kind: [file.write, file.create, file.unlink]
+  #     severity: high
+  #     verdict: violation
+  #     action: alert
+  #     match:
+  #       outside_session_workspace: ["/tmp", "/var/tmp", "${canary_dir}"]
+  #
+  # The trade: it cannot fire on an event whose session is unknown. Watch
+  # attribution_health() if you switch -- see DESIGN.md 5A.4.
+
+  - id: fs.agent_config_write
+    description: Agent modified its own guardrail config. Always a violation.
+    kind: [file.write, file.create]
+    severity: critical
+    verdict: violation
+    action: kill
+    match:
+      path_glob:
+        - "**/.claude/settings.json"
+        - "**/.claude/settings.local.json"
+        - "**/.mcp.json"
+        - "**/policy.yaml"
+
+  # --- execution -----------------------------------------------------------
+  - id: exec.pipe_to_shell
+    description: Remote content piped into a shell.
+    kind: [process.exec, tool.pre]
+    severity: critical
+    verdict: violation
+    action: alert
+    match:
+      argv_regex:
+        - "(curl|wget)[^|]*\\|\\s*(ba|z|d)?sh"
+        - "python[0-9.]*\\s+-c\\s+.*urlopen"
+
+  - id: exec.privilege
+    description: Privilege escalation or persistence attempt.
+    kind: [process.exec, tool.pre]
+    severity: critical
+    verdict: violation
+    action: kill
+    match:
+      argv_regex:
+        - "\\bsudo\\b"
+        - "\\bsu\\s+-"
+        - "chmod\\s+[ug]?\\+s"
+        - "\\b(crontab|systemctl|launchctl)\\b"
+
+  - id: exec.history_tamper
+    description: Attempt to clear shell history or audit logs.
+    kind: [process.exec, tool.pre]
+    severity: critical
+    verdict: violation
+    action: alert
+    match:
+      argv_regex:
+        - "history\\s+-c"
+        - ">\\s*/var/log/audit"
+        - "auditctl\\s+-D"
+
+  # --- egress --------------------------------------------------------------
+  - id: net.egress_allowlist
+    description: Outbound connection to a host that is not on the allowlist.
+    kind: [net.connect]
+    severity: high
+    verdict: violation
+    action: alert
+    match:
+      host_not_in:
+        - api.anthropic.com
+        - registry.npmjs.org
+        - pypi.org
+        - files.pythonhosted.org
+        - github.com
+        - objects.githubusercontent.com
+        - localhost
+        - 127.0.0.1
+
+  - id: net.odd_port
+    description: Connection to a port associated with reverse shells or C2.
+    kind: [net.connect]
+    severity: high
+    verdict: violation
+    action: alert
+    match:
+      port_in: [4444, 1337, 9001, 31337]
+
+  # --- source integrity ----------------------------------------------------
+  - id: src.secret_committed
+    description: A secret-shaped literal was written into a source file.
+    kind: [tool.pre]
+    severity: high
+    verdict: violation
+    match:
+      tool_name_regex: ["^(Write|Edit|MultiEdit)$"]
+      content_regex:
+        - "AKIA[0-9A-Z]{16}"
+        - "-----BEGIN [A-Z ]*PRIVATE KEY-----"
+        - "sk-[A-Za-z0-9]{32,}"
+        - "gh[pousr]_[A-Za-z0-9]{36}"
+
+  # --- canaries (used by the probe suite; see gm/probes.py) ----------------
+  - id: canary.file
+    description: Canary credential file was opened -- proves file monitoring is live.
+    kind: [file.open, file.read]
+    severity: low
+    verdict: warn
+    match:
+      path_glob: ["${canary_dir}/fake_id_rsa"]
+
+  - id: canary.exec
+    description: Canary binary executed -- proves exec monitoring is live.
+    kind: [process.exec]
+    severity: low
+    verdict: warn
+    match:
+      argv_regex: ["gm-canary-exec"]
+
+  - id: canary.net
+    description: Canary egress attempted -- proves network monitoring is live.
+    kind: [net.connect]
+    severity: low
+    verdict: warn
+    match:
+      host_not_in:
+        - api.anthropic.com
+        - registry.npmjs.org
+        - pypi.org
+        - files.pythonhosted.org
+        - github.com
+        - objects.githubusercontent.com
+        - localhost
+        - 127.0.0.1

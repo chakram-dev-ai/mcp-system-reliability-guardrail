@@ -1,0 +1,55 @@
+{
+  "_comment": [
+    "Windows variant. Same schema as settings.example.json -- {type, command,",
+    "timeout}, with `command` a single string. `args`, `async` and `if` are not",
+    "hook keys and were silently doing nothing here.",
+    "matcher is '*', not 'Bash|PowerShell|Write|Edit|WebFetch': an enumerated",
+    "matcher list is a blind spot by construction -- exactly what",
+    "find_blind_spots exists to surface.",
+    "Both paths are ABSOLUTE, quoted, and use FORWARD slashes. That form works",
+    "whether the hook command is run through cmd or through Git Bash; the old",
+    "%CLAUDE_PROJECT_DIR% form only expands under cmd. It also points at the",
+    "monitor's install rather than a copy inside the project, which the agent",
+    "could edit. The interpreter must be one the AGENT account can run: a",
+    "per-user Python under someone else's profile is not readable by it.",
+    "The shim talks to the monitor's named pipe; set GM_PIPE for both halves",
+    "if you moved it off the default."
+  ],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:/Program Files/Python312/python.exe\" \"C:/Program Files/gm/hooks/gm_hook.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:/Program Files/Python312/python.exe\" \"C:/Program Files/gm/hooks/gm_hook.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:/Program Files/Python312/python.exe\" \"C:/Program Files/gm/hooks/gm_hook.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "_comment": [
+    "Copy the `hooks` block into the MONITORED project's .claude/settings.json.",
+    "A hook entry is {type, command, timeout} only -- `command` is one full",
+    "command string. There is no `args`, `async`, or `if` key; entries using",
+    "them are ignored or misparsed, which is a silent loss of the intent signal.",
+    "matcher '*' is deliberate: narrow matchers are how blind spots get in.",
+    "The shim path is ABSOLUTE and points at the monitor's install, not at a copy",
+    "inside the project: anything under $CLAUDE_PROJECT_DIR is the agent's to edit,",
+    "and a shim the agent can rewrite is not a signal. Adjust /opt/gm to wherever",
+    "you installed it, somewhere the agent account can read but not write.",
+    "Start gm.monitor BEFORE the agent -- a hook that fires before the socket",
+    "exists is a silently lost event."
+  ],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /opt/gm/hooks/gm_hook.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /opt/gm/hooks/gm_hook.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /opt/gm/hooks/gm_hook.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,232 @@
+# Windows guardrail policy. Merge with policy.yaml or load instead of it.
+#
+# Written against the canonical events emitted by gm/collectors_win.py.
+# Note the extra event kinds Windows gives you that Linux does not:
+#   registry.write   persistence lives here, not in crontab
+#   net.dns          hostname before the connection, from Sysmon 22
+
+vars:
+  workspace: C:\Users\agent\project
+  canary_dir: C:\Users\agent\.gm-canaries
+
+rules:
+
+  # --- credential access ---------------------------------------------------
+  # Requires SACLs on these directories + object-access auditing. Without
+  # that, these rules are dead code -- the probe suite is what tells you.
+  - id: cred.read
+    description: Agent read a credential store.
+    kind: [file.read, file.open]
+    severity: critical
+    verdict: violation
+    action: alert
+    match:
+      path_glob:
+        - "C:\\Users\\*\\.ssh\\*"
+        - "C:\\Users\\*\\.aws\\*"
+        - "C:\\Users\\*\\.kube\\config"
+        - "C:\\Users\\*\\AppData\\Roaming\\gcloud\\*"
+        # DPAPI master keys and Credential Manager blobs -- the Windows
+        # equivalent of ~/.ssh, and far less obvious to anyone from Unix.
+        - "C:\\Users\\*\\AppData\\Roaming\\Microsoft\\Protect\\*"
+        - "C:\\Users\\*\\AppData\\*\\Microsoft\\Credentials\\*"
+        - "C:\\Users\\*\\AppData\\Roaming\\Microsoft\\Crypto\\*"
+        - "*.pfx"
+        - "*.pem"
+
+  - id: cred.hive_access
+    description: Registry hive dump attempt (SAM/SECURITY/SYSTEM).
+    kind: [process.exec]
+    severity: critical
+    verdict: violation
+    action: kill
+    match:
+      argv_regex:
+        - "(?i)reg(\\.exe)?\\s+save\\s+.*\\\\(sam|security|system)\\b"
+        - "(?i)\\bntdsutil\\b"
+        - "(?i)vssadmin\\s+create\\s+shadow"
+
+  # --- filesystem containment ---------------------------------------------
+  - id: fs.write_outside_workspace
+    kind: [file.write, file.create, file.unlink]
+    severity: high
+    verdict: violation
+    action: alert
+    match:
+      path_not_under:
+        - "${workspace}"
+        - "${canary_dir}"
+        - "C:\\Users\\agent\\AppData\\Local\\Temp"
+        - "C:\\Windows\\Temp"
+
+  - id: fs.startup_folder
+    description: Write to a Startup folder -- classic persistence.
+    kind: [file.write, file.create]
+    severity: critical
+    verdict: violation
+    action: alert
+    match:
+      path_glob:
+        - "*\\Start Menu\\Programs\\Startup\\*"
+        - "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\StartUp\\*"
+
+  - id: fs.agent_config_write
+    description: Agent modified its own guardrail config.
+    kind: [file.write, file.create]
+    severity: critical
+    verdict: violation
+    action: kill
+    match:
+      path_glob:
+        - "*\\.claude\\settings.json"
+        - "*\\.claude\\settings.local.json"
+        - "*\\.mcp.json"
+        - "*\\policy*.yaml"
+
+  # --- persistence (no Linux analogue) -------------------------------------
+  - id: reg.run_key
+    description: Write to an autorun registry key.
+    kind: [registry.write]
+    severity: critical
+    verdict: violation
+    action: alert
+    match:
+      key_glob:
+        - "*\\CurrentVersion\\Run*"
+        - "*\\CurrentVersion\\Winlogon*"
+        - "*\\Image File Execution Options\\*"
+        - "*\\Services\\*"
+
+  - id: reg.defender_tamper
+    description: Attempt to disable Defender or AMSI via registry.
+    kind: [registry.write]
+    severity: critical
+    verdict: violation
+    action: kill
+    match:
+      key_glob: ["*\\Windows Defender\\*", "*\\AMSI\\Providers\\*"]
+
+  # --- execution -----------------------------------------------------------
+  - id: exec.lolbin_download
+    description: Living-off-the-land binary used to fetch remote content.
+    kind: [process.exec, tool.pre]
+    severity: critical
+    verdict: violation
+    action: alert
+    match:
+      argv_regex:
+        - "(?i)certutil(\\.exe)?\\s+.*-urlcache"
+        - "(?i)\\bbitsadmin\\b.*\\/transfer"
+        - "(?i)\\bmshta\\b.*http"
+        - "(?i)regsvr32(\\.exe)?\\s+.*(\\/i:http|scrobj)"
+        - "(?i)rundll32(\\.exe)?\\s+.*javascript:"
+
+  - id: exec.pipe_to_shell
+    description: Remote content fetched and executed in-memory.
+    kind: [process.exec, tool.pre]
+    severity: critical
+    verdict: violation
+    action: alert
+    match:
+      argv_regex:
+        # The PowerShell idiom for `curl ... | sh`. IEX aliases to
+        # Invoke-Expression, so match both.
+        - "(?i)(iex|invoke-expression)\\s*\\(.*(downloadstring|invoke-webrequest|iwr|curl)"
+        - "(?i)(downloadstring|downloadfile)\\s*\\("
+
+  - id: exec.encoded_command
+    description: Base64-encoded PowerShell. Legitimate uses exist but are rare
+      in an agent context, and this is the single highest-yield pattern.
+    kind: [process.exec, tool.pre]
+    severity: high
+    verdict: violation
+    action: alert
+    match:
+      argv_regex:
+        - "(?i)powershell(\\.exe)?\\s+.*\\s-e(nc|ncoded|ncodedcommand)?\\s"
+        - "(?i)-executionpolicy\\s+bypass"
+        - "(?i)-windowstyle\\s+hidden"
+
+  - id: exec.privilege
+    kind: [process.exec, tool.pre]
+    severity: critical
+    verdict: violation
+    action: kill
+    match:
+      argv_regex:
+        - "(?i)\\b(schtasks|sc\\.exe|net\\s+localgroup\\s+administrators)\\b"
+        - "(?i)\\bnew-service\\b"
+        - "(?i)start-process.*-verb\\s+runas"
+
+  - id: exec.log_tamper
+    description: Attempt to clear the event log or stop the monitor.
+    kind: [process.exec, tool.pre]
+    severity: critical
+    verdict: violation
+    action: kill
+    match:
+      argv_regex:
+        - "(?i)wevtutil\\s+cl"
+        - "(?i)clear-eventlog"
+        - "(?i)(stop-service|sc\\s+stop).*(sysmon|gm-monitor)"
+
+  # --- egress --------------------------------------------------------------
+  # Sysmon 3 populates DestinationHostname, and Sysmon 22 gives the DNS query
+  # outright -- so unlike Linux you can allowlist by name, not just by IP.
+  - id: net.egress_allowlist
+    kind: [net.connect, net.dns]
+    severity: high
+    verdict: violation
+    action: alert
+    match:
+      host_not_in:
+        - api.anthropic.com
+        - registry.npmjs.org
+        - pypi.org
+        - files.pythonhosted.org
+        - github.com
+        - objects.githubusercontent.com
+        - localhost
+        - 127.0.0.1
+
+  # --- canaries ------------------------------------------------------------
+  - id: canary.file
+    kind: [file.read, file.open]
+    severity: low
+    verdict: warn
+    match:
+      path_glob: ["${canary_dir}\\fake_id_rsa"]
+
+  - id: canary.exec
+    kind: [process.exec]
+    severity: low
+    verdict: warn
+    match:
+      # (?i) like every other command regex here: Sysmon renders CommandLine
+      # with the on-disk casing, so a canary_dir with a capital letter would
+      # otherwise make this probe report FAIL for a control that works.
+      argv_regex: ["(?i)gm-canary-exec"]
+
+  - id: canary.net
+    description: Canary egress attempted -- proves network monitoring is live.
+    kind: [net.connect, net.dns]
+    severity: low
+    verdict: warn
+    match:
+      host_not_in:
+        - api.anthropic.com
+        - registry.npmjs.org
+        - pypi.org
+        - files.pythonhosted.org
+        - github.com
+        - objects.githubusercontent.com
+        - localhost
+        - 127.0.0.1
+
+  - id: canary.registry
+    description: Proves registry monitoring is live.
+    kind: [registry.write]
+    severity: low
+    verdict: warn
+    match:
+      key_glob: ["*\\Software\\GmCanary\\*"]

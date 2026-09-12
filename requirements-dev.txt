@@ -1,0 +1,10 @@
+-r requirements.txt
+
+# Test and release-gate tooling.
+#
+# The suite itself is stdlib unittest, so it runs with none of this installed;
+# coverage.py just upgrades the report from statement counts (stdlib `trace`)
+# to branch coverage. pytest is optional too -- it collects the same
+# unittest.TestCase classes if you prefer its output.
+coverage>=6.0
+pytest>=7.0
