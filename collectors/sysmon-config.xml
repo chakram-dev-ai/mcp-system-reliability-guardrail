@@ -1,0 +1,105 @@
+<!-- Minimal Sysmon config for guardrail-monitor.
+     Install:  sysmon64.exe -accepteula -i collectors\sysmon-config.xml
+     Update:   sysmon64.exe -c collectors\sysmon-config.xml
+
+     Philosophy: include everything for the agent account, exclude nothing
+     globally. You want completeness for one account, not a tuned
+     enterprise-wide ruleset. Adjust the User conditions to your agent account.
+-->
+<Sysmon schemaversion="4.90">
+  <HashAlgorithms>SHA256</HashAlgorithms>
+  <EventFiltering>
+
+    <!-- 1: process creation -->
+    <RuleGroup groupRelation="or">
+      <ProcessCreate onmatch="include">
+        <User condition="contains">agent</User>
+      </ProcessCreate>
+    </RuleGroup>
+
+    <!-- 3: network connection. Hostname is populated here for free. -->
+    <RuleGroup groupRelation="or">
+      <NetworkConnect onmatch="include">
+        <User condition="contains">agent</User>
+      </NetworkConnect>
+    </RuleGroup>
+
+    <!-- 22: DNS query -->
+    <RuleGroup groupRelation="or">
+      <DnsQuery onmatch="include">
+        <User condition="contains">agent</User>
+      </DnsQuery>
+    </RuleGroup>
+
+    <!-- 11: file created. Note there is NO file-read event in Sysmon;
+         reads come from Security 4663 via SACLs. See WINDOWS.md. -->
+    <RuleGroup groupRelation="or">
+      <FileCreate onmatch="include">
+        <User condition="contains">agent</User>
+      </FileCreate>
+    </RuleGroup>
+
+    <!-- 12/13/14: registry. This is where Windows persistence lives. -->
+    <RuleGroup groupRelation="or">
+      <RegistryEvent onmatch="include">
+        <TargetObject condition="contains">CurrentVersion\Run</TargetObject>
+        <TargetObject condition="contains">CurrentVersion\Winlogon</TargetObject>
+        <TargetObject condition="contains">Image File Execution Options</TargetObject>
+        <TargetObject condition="contains">\Services\</TargetObject>
+        <TargetObject condition="contains">Windows Defender</TargetObject>
+        <TargetObject condition="contains">\AMSI\</TargetObject>
+        <TargetObject condition="contains">\Software\GmCanary\</TargetObject>
+      </RegistryEvent>
+    </RuleGroup>
+
+    <!-- 23/26: file delete -->
+    <RuleGroup groupRelation="or">
+      <FileDelete onmatch="include">
+        <User condition="contains">agent</User>
+      </FileDelete>
+    </RuleGroup>
+
+    <!-- 10: process access. Anything reading the monitor's memory is the
+         highest-signal event in this whole system. -->
+    <RuleGroup groupRelation="or">
+      <ProcessAccess onmatch="include">
+        <TargetImage condition="contains">python</TargetImage>
+        <TargetImage condition="contains">Sysmon</TargetImage>
+        <TargetImage condition="end with">lsass.exe</TargetImage>
+      </ProcessAccess>
+    </RuleGroup>
+
+    <!-- Canary coverage. Deliberately keyed on the canary artifacts rather
+         than on the agent account: run_probe_suite fires from the monitor
+         process, so a User-scoped include filters the probes out and reports
+         FAIL for controls that work. Keep these in sync with `canary_dir`. -->
+    <RuleGroup groupRelation="or">
+      <ProcessCreate onmatch="include">
+        <Image condition="contains">gm-canary-exec</Image>
+      </ProcessCreate>
+    </RuleGroup>
+    <RuleGroup groupRelation="or">
+      <FileCreate onmatch="include">
+        <TargetFilename condition="contains">.gm-canaries-escape</TargetFilename>
+      </FileCreate>
+    </RuleGroup>
+    <RuleGroup groupRelation="or">
+      <NetworkConnect onmatch="include">
+        <DestinationIp condition="is">192.0.2.1</DestinationIp>
+      </NetworkConnect>
+    </RuleGroup>
+    <RuleGroup groupRelation="or">
+      <DnsQuery onmatch="include">
+        <QueryName condition="contains">gm-canary.invalid</QueryName>
+      </DnsQuery>
+    </RuleGroup>
+
+    <!-- 8: remote thread creation. Should never happen from a coding agent. -->
+    <RuleGroup groupRelation="or">
+      <CreateRemoteThread onmatch="include">
+        <SourceUser condition="contains">agent</SourceUser>
+      </CreateRemoteThread>
+    </RuleGroup>
+
+  </EventFiltering>
+</Sysmon>

@@ -1,0 +1,16 @@
+# Runtime dependencies.
+#
+# mcp needs Python 3.10+, and only gm/server.py (the MCP query process) needs
+# it. The monitor, the hook shim and every other module run on older
+# interpreters -- see gm/__init__.py.
+#
+# Pinned below 2: mcp 2.x renamed FastMCP to MCPServer, so an unpinned install
+# resolves to a version that cannot import gm.server at all.
+mcp>=1.0,<2
+pyyaml>=5.4
+psutil>=5.9          # ProcTreeCollector uses Process.net_connections()
+
+# Windows only: the Sysmon / Security / PowerShell collectors and the named-pipe
+# ingest. Not needed by the hook shim, which reaches the pipe through builtin
+# open() precisely so the agent's interpreter needs nothing installed.
+pywin32>=305; sys_platform == "win32"
