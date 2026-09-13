@@ -54,6 +54,16 @@ class TestCovers(ReconcileCase):
                     r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"):
             self.assertTrue(self.R._covers(h, self.eff("process.exec", 2, exe=exe)), exe)
 
+    def test_a_windows_exe_is_explained_by_its_name_without_the_extension(self):
+        # Found building the hosted demo: Sysmon's Image is C:\...\python.exe,
+        # the Bash command says "python", and the exec was reported undeclared.
+        h = self.hook(1, command="python -m pytest tests")
+        e = self.eff("process.exec", 2, exe=r"C:\Python312\python.exe",
+                     argv=["python -m pytest tests"])
+        self.assertTrue(self.R._covers(h, e))
+        other = self.eff("process.exec", 2, exe=r"C:\Windows\System32\certutil.exe")
+        self.assertFalse(self.R._covers(h, other))
+
     def test_exec_with_no_binary_name_is_not_covered(self):
         h = self.hook(1, command="python helper.py")
         self.assertFalse(self.R._covers(h, self.eff("process.exec", 2)))

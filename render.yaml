@@ -1,0 +1,21 @@
+# Render Blueprint for the hosted demo (web/app.py, built from ./Dockerfile).
+#
+# Deploy: https://render.com/deploy?repo=https://github.com/chakram-dev-ai/mcp-system-reliability-guardrail
+# Free instances sleep after ~15 idle minutes and take up to a minute to wake;
+# the demo reseeds its sample data on every start.
+services:
+  - type: web
+    name: guardrail-monitor-demo
+    runtime: docker
+    plan: free
+    branch: main
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    autoDeployTrigger: commit
+    envVars:
+      - key: GM_DEMO_RESET_MINUTES
+        value: "30"
+      - key: GM_DEMO_RATE_LIMIT
+        value: "30"
+      - key: GM_DEMO_MAX_LOG_BYTES
+        value: "2000000"

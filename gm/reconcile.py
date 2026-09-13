@@ -53,8 +53,12 @@ def _covers(hook: dict, effect: dict) -> bool:
         exe = paths.basename(ed.get("exe") or ed.get("comm") or "")
         if not exe:
             return False
-        # A tool call explains any exec whose binary name it names.
-        if exe in cmd:
+        # A tool call explains any exec whose binary name it names -- with or
+        # without its extension. Sysmon reports C:\...\python.exe for a Bash
+        # call that says "python x.py"; matching only "python.exe" left every
+        # Windows exec undeclared.
+        stem = os.path.splitext(exe)[0]
+        if exe in cmd or (stem and stem in cmd):
             return True
         # ...and a shell tool call additionally explains the shell it runs
         # through. It must NOT explain anything else in the window: an earlier

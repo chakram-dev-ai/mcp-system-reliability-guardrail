@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: tests (ubuntu, python 3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -r requirements-dev.txt -r requirements-web.txt
+      - name: Run all tiers
+        run: python run_tests.py
+
+  container:
+    name: container build and live smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -t gm-demo .
+      - name: Start it the way Render does (PORT injected)
+        run: docker run -d --name gm-demo -p 8080:10000 -e PORT=10000 gm-demo
+      - name: Smoke test over HTTP
+        run: python3 web/smoke.py http://127.0.0.1:8080 --wait 90
+      - name: Container is healthy by its own HEALTHCHECK
+        run: |
+          for i in $(seq 1 20); do
+            state=$(docker inspect --format '{{.State.Health.Status}}' gm-demo)
+            echo "health: $state"
+            [ "$state" = healthy ] && exit 0
+            sleep 3
+          done
+          exit 1
+      - name: Container logs
+        if: always()
+        run: docker logs gm-demo

@@ -87,6 +87,7 @@ A skip means a test could not run here, not that it passed:
 | `pywin32` (or non-Windows) | named-pipe ingest, event-log callback |
 | non-POSIX | unix-socket ingest, exec-bit handling |
 | `mcp` | nothing — a minimal `FastMCP` stands in so the tool functions stay testable. `mcp` needs Python 3.10+ |
+| `fastapi` / `uvicorn` / `defusedxml` / `httpx` | the hosted demo in `web/` (`requirements-web.txt`, Python 3.10+) |
 
 **Coverage is platform-dependent for exactly this reason.** `gm/collectors.py`
 reports lower on Windows because `IngestServer`'s socket loop cannot run there,
