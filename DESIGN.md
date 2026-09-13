@@ -1,7 +1,7 @@
 # guardrail-monitor — Design and Operations
 
-How the monitor works, what it installs, how to run it, and how to configure
-rules and access controls.
+How the monitor works, what it installs, how to run it, how to configure
+rules and access controls, and how to test and deploy the hosted demo (§8).
 
 ---
 
@@ -98,7 +98,9 @@ of our own. That is a deliberate trade — see §3.3 for what it costs you.
 | 2 | **MCP query server** (`python -m gm.server`) | stdio MCP server, launched by a client | As long as its client | supervisor account |
 | 3 | **Hook shim** (`hooks/gm_hook.py`) | Short-lived process | Per tool call | **agent account** |
 
-That is the whole shipped surface: **three executables, one persistent.**
+That is the whole shipped surface: **three executables, one persistent.** The
+hosted demo in `web/` (§8) is a separate, optional prototype for reviewers and
+is not part of a monitor deployment.
 
 The two Python processes share nothing but files, all under the log directory:
 
@@ -643,7 +645,227 @@ loudly at startup rather than silently never matching.
 
 ---
 
-## 8. Scope
+## 8. Hosted demo: container testing and deployment
+
+A prototype reviewers can call over HTTP without installing anything. It is
+**not a monitor deployment**: nothing in it observes a real agent. Deploy the
+monitor with §4.
+
+**Live instance: https://guardrail-monitor-demo.onrender.com**
+
+| For reviewers | Link |
+|---|---|
+| Landing page | https://guardrail-monitor-demo.onrender.com |
+| Interactive API docs (Swagger UI) | https://guardrail-monitor-demo.onrender.com/docs |
+| Example: the undeclared credential read | https://guardrail-monitor-demo.onrender.com/api/find_blind_spots/demo-cred |
+
+- On Render's free plan the service sleeps after 15 minutes without traffic, so
+  the first request after that can take up to a minute.
+- Everyone shares one demo log. It resets on its own within 30 minutes, or at
+  once with `POST /demo/reset`.
+- The deployment and its settings are in §8.7 and §8.8.
+
+### 8.1 What runs, and what is simulated
+
+```
+reviewer: browser, curl, web/smoke.py
+    │  HTTP(S)
+    ▼
+one uvicorn process  (web/app.py, FastAPI; in a container when deployed)
+    ├─ /demo/*   posted or sample XML ─▶ defusedxml ─▶ gm.collectors_win normalizer
+    │                                                   ─▶ DemoMonitor.ingest()
+    ├─ /api/*    ─▶ gm.server tool functions (the code the MCP server runs)
+    └─ heartbeat thread ─▶ Monitor.check_health() every GM_DEMO_HEARTBEAT_SECONDS
+    │
+    ▼
+GM_DEMO_DIR:  events.jsonl (hash-chained) · alerts.jsonl · status.json
+```
+
+| Part | In the demo |
+|---|---|
+| Windows normalizers (Sysmon, Security 4663, PowerShell 4104) | **Real.** Every event goes through `gm.collectors_win` |
+| Policy engine and `policy.windows.yaml` | **Real** |
+| Session attribution, hash-chained log, alerts log, heartbeat | **Real** (`gm.monitor`, `gm.store`) |
+| The ten MCP tools | **Real** implementations from `gm/server.py`, exposed as `/api/<tool>` over REST instead of MCP stdio |
+| Sensor | **None.** Events are sample XML (`web/samples.py`) or XML a reviewer posts. `control_coverage` reports `kernel_collector_alive: false` |
+| `action: kill` | **Simulated.** Recorded as `enforce.simulated`; `os.kill` is never called |
+| `run_probe_suite` | **Simulated.** `collector=live` injects what a sensor would emit (4/4 PASS); `collector=dead` injects nothing (0/4). No file, process or network action |
+| Process layout | Monitor and query code share one process. A real deployment runs them as two (§3.1) |
+
+It is not an MCP endpoint either: there is no MCP-over-HTTP transport and no
+hook ingest socket or pipe, so real agents cannot report to it.
+
+Four scenarios are seeded on every start:
+
+| Scenario | Session | Shows |
+|---|---|---|
+| `benign-edit-and-test` | `demo-benign` | Every effect declared by a hook; no rule fires, nothing undeclared |
+| `undeclared-credential-read` | `demo-cred` | §6.1: a helper script reads `.ssh\id_rsa`; `cred.read` fires and the read is the only blind spot |
+| `agent-edits-its-guardrails` | `demo-config` | `fs.agent_config_write`, an `action: kill` rule, recorded as simulated |
+| `unhooked-persistence` | none | Download, Run-key persistence and a PowerShell stager with no hooks: every rule still fires, attribution stays `unknown` |
+
+Sample sessions have no live process, so `list_sessions` needs `include_dead=true`.
+
+### 8.2 Controls for running it in public
+
+| Risk | Control |
+|---|---|
+| Entity-expansion or external-entity XML in posted events | Parsed with `defusedxml` before the stdlib normalizer; DTDs refused with `400` |
+| Oversized input | Event XML over 64 KB and request bodies over 256 KB get `413` |
+| Malformed or unsupported events | `400` for malformed XML; `422` for an unsupported channel or an event id the normalizer does not map |
+| A posted event whose kill rule targets the container's own processes | Enforcement is simulated (§8.1) |
+| Write floods and log growth | `GM_DEMO_RATE_LIMIT` writes per minute per client (`429`, `Retry-After: 60`); reads are not limited. The log reseeds past `GM_DEMO_MAX_LOG_BYTES` |
+| Stale or polluted shared state | Reseeds on start, every `GM_DEMO_RESET_MINUTES`, and on `POST /demo/reset`. A reset deletes only the demo's own named files, never a directory |
+| Container privileges | Runs as the non-root user `gmdemo` (uid 10001) |
+
+The rate limit keys on the client address uvicorn derives from proxy headers
+(`--proxy-headers`), which a client can spoof. That is adequate for a demo with
+resetting sample data, and not a pattern to copy for anything that matters.
+
+### 8.3 Files
+
+| File | Role |
+|---|---|
+| `web/app.py` | The FastAPI app: `/api/<tool>`, `/demo/*`, `/healthz`, a landing page, Swagger UI at `/docs` |
+| `web/samples.py` | Sample event XML for the four scenarios and for each simulated probe |
+| `web/smoke.py` | 18 end-to-end HTTP checks. Stdlib only; runs against any URL |
+| `requirements-web.txt` | `requirements.txt` plus FastAPI, uvicorn, defusedxml and httpx. Python 3.10+ |
+| `Dockerfile`, `.dockerignore` | The image. Tests and git history are excluded from the build context |
+| `render.yaml` | Render Blueprint: one free Docker web service |
+| `.github/workflows/ci.yml` | Tests on Linux; builds, runs and smoke-tests the image |
+| `tests/functional/test_web_demo.py` | In-process API tests, plus one real uvicorn process checked by `web/smoke.py` |
+
+### 8.4 Testing without a container
+
+```bash
+pip install -r requirements-dev.txt -r requirements-web.txt   # Python 3.10+
+python run_tests.py                                            # includes tests/functional/test_web_demo.py
+uvicorn web.app:app --port 8000
+python web/smoke.py http://127.0.0.1:8000
+```
+
+`test_web_demo.py` covers the seeded findings, the honesty guarantees (the
+monitor reports no kernel sensor, `os.kill` and `subprocess.run` are never
+called), hostile and malformed input, reseeding by reset, age and size, the
+rate limit, and a real uvicorn process checked by `web/smoke.py`. It skips when
+the web dependencies are absent -- on Python below 3.10, for instance, where
+`mcp` cannot be installed. A skip is not a pass (TESTING.md).
+
+### 8.5 Testing the container
+
+Build it, then run it the way Render does, with `PORT` injected:
+
+```bash
+docker build -t gm-demo .
+docker run -d --name gm-demo -p 8080:10000 -e PORT=10000 gm-demo
+python web/smoke.py http://127.0.0.1:8080 --wait 90
+docker inspect --format '{{.State.Health.Status}}' gm-demo   # "healthy" once HEALTHCHECK passes
+docker logs gm-demo
+docker rm -f gm-demo
+```
+
+Without `-e PORT` the image listens on 8000: `docker run -p 8000:8000 gm-demo`.
+The image contains no tests, so the suite runs outside it (§8.4, §8.6).
+
+What `web/smoke.py` checks, in order:
+
+| Group | Checks |
+|---|---|
+| Availability | landing page; OpenAPI schema lists the tool routes |
+| Seeded findings | violations include `cred.read`, `fs.agent_config_write`, `exec.lolbin_download`, `reg.run_key`; the credential read is the only blind spot in `demo-cred`; `demo-benign` is fully declared; session summary; sample sessions; attribution health; agent discovery |
+| Integrity | the hash chain verifies, before and after the writes below |
+| Honesty | heartbeat running with no kernel sensor; probes 4/4 with `collector=live` and 0/4 with `collector=dead`; kill recorded as `enforce.simulated` |
+| Input | a posted Sysmon event fires `exec.lolbin_download`; DTD/entity XML refused with `400`; the alerts log carries `cred.read` |
+
+No Docker locally? CI builds and smoke-tests the same image on every push.
+
+### 8.6 Continuous integration
+
+`.github/workflows/ci.yml` runs on every push, every pull request, and on
+demand (`workflow_dispatch`).
+
+| Job | Steps | What passing proves |
+|---|---|---|
+| `tests (ubuntu, python 3.12)` | Install dev and web requirements; `python run_tests.py` | Every tier passes on Linux with the real `mcp`, including the web demo tests |
+| `container build and live smoke test` | `docker build`; `docker run -e PORT=10000`; `web/smoke.py --wait 90`; wait for `healthy`; print the container logs | The image builds, binds the injected port, passes all 18 checks, and passes its own `HEALTHCHECK` |
+
+CI does not apply `--fail-under`; the Linux run covers less of `gm/` than the
+Windows one (TESTING.md). Results are in the repository's Actions tab, or,
+for a public repository, without authentication:
+
+```bash
+curl -s "https://api.github.com/repos/chakram-dev-ai/mcp-system-reliability-guardrail/actions/runs?branch=main&per_page=1"
+```
+
+### 8.7 Deploying to Render
+
+Render runs the Dockerfile unchanged on its free plan and deploys from GitHub
+using `render.yaml`.
+
+```
+push ─▶ CI: tests + container smoke ─▶ merge to main ─▶ Render builds the Dockerfile
+     ─▶ service URL ─▶ python web/smoke.py <service-url>
+```
+
+**First deploy**
+
+1. Get `render.yaml` and `Dockerfile` onto `main`. The Blueprint deploys
+   `branch: main`.
+2. Open the Deploy to Render link (the button in README.md):
+   `https://render.com/deploy?repo=https://github.com/chakram-dev-ai/mcp-system-reliability-guardrail`
+3. Sign in to Render and confirm the Blueprint. It creates one web service,
+   `guardrail-monitor-demo`, on the free plan.
+4. Follow the build in Render's dashboard. Render builds the image, starts it
+   with `PORT` set (10000 by default; the service binds `0.0.0.0`), and uses
+   `/healthz` as its health check.
+5. Copy the service URL from the dashboard and verify the live service:
+   `python web/smoke.py <service-url>`.
+
+The live instance above was deployed this way from `main` at merge commit
+`4a1d34b`, and passed all 18 `web/smoke.py` checks against
+`https://guardrail-monitor-demo.onrender.com` on 13 September 2026.
+
+**Updates.** `autoDeployTrigger: commit` deploys every commit to `main`.
+Setting it to `checksPass` makes Render deploy only after the branch's CI
+checks pass, which is the better choice once CI gates changes.
+
+**Rollback.** Roll back to an earlier deploy from Render's dashboard, or revert
+the commit on `main`, which redeploys.
+
+**Teardown.** Delete the service in Render's dashboard. It has no disk or
+database to clean up.
+
+**Free plan behaviour** (from Render's documentation when this was written):
+
+- A free web service spins down after 15 minutes without inbound traffic, and
+  the next request waits for it to start again. `web/smoke.py` waits up to 120
+  seconds for `/healthz` by default for this reason.
+- Each workspace gets 750 free instance hours per calendar month.
+- No disk is configured, so nothing survives a restart. The demo reseeds on
+  every start regardless.
+
+**Other hosts.** The image assumes nothing Render-specific beyond serving HTTP
+on `$PORT`, so other container platforms should work. Only Render is described
+here, and only Render's port injection is mimicked in CI.
+
+### 8.8 Configuration
+
+Set these under `envVars` in `render.yaml` or in the service's environment
+settings.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORT` | `8000` in the image; Render injects `10000` | Listening port |
+| `GM_DEMO_DIR` | `/tmp/gm-demo` in the image; `<tempdir>/gm-demo` otherwise | Demo log, alerts and status files |
+| `GM_DEMO_POLICY` | `policy.windows.yaml` beside the `gm` package | Rule file. The sample events are written against it |
+| `GM_DEMO_RESET_MINUTES` | `30` | Reseed interval |
+| `GM_DEMO_MAX_LOG_BYTES` | `2000000` | Reseed when the log outgrows this |
+| `GM_DEMO_RATE_LIMIT` | `30` | Writes per minute per client |
+| `GM_DEMO_HEARTBEAT_SECONDS` | `5` | Health check and status-file interval |
+
+---
+
+## 9. Scope
 
 **In scope:** what the process actually touched, and whether the guardrail
 noticed.
