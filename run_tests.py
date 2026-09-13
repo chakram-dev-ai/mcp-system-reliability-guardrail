@@ -149,7 +149,7 @@ def main() -> int:
     print("  python   %s" % sys.version.split()[0])
     print("  platform %s" % sys.platform)
     print("  tiers    %s" % ", ".join(tiers))
-    for mod in ("yaml", "psutil", "win32pipe", "mcp", "coverage"):
+    for mod in ("yaml", "psutil", "win32pipe", "mcp", "fastapi", "coverage"):
         try:
             __import__(mod)
             state = "present"

@@ -72,9 +72,48 @@ hooks/gm_hook.py         Claude Code hook shim
 hooks/settings.example.json
 collectors/audit.rules   Linux auditd ruleset
 collectors/setup-windows.ps1  Windows sensors + ACLs, with a -ValidateOnly preflight
+web/                     hosted demo: HTTP wrapper, sample events, smoke checks
+Dockerfile, render.yaml  container and Render Blueprint for the hosted demo
 run_tests.py             test runner and release gate
 tests/                   smoke / unit / functional
 ```
+
+## Hosted demo
+
+A live prototype reviewers can call without installing anything: the real
+pipeline -- normalizers, `policy.windows.yaml`, session attribution, the
+hash-chained log, and every MCP tool implementation -- behind plain HTTP, fed
+sample Sysmon, Security 4663 and PowerShell 4104 events.
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/chakram-dev-ai/mcp-system-reliability-guardrail)
+
+What it is not: there is **no live sensor** (`control_coverage` says so), `action:
+kill` is **recorded as `enforce.simulated`, never executed**, and the probe suite
+**injects** the events a sensor would emit rather than touching files, processes or
+the network. One shared demo log, reseeded on start, every 30 minutes, when it
+grows past 2 MB, or on `POST /demo/reset`; writes are rate limited per client.
+
+| Endpoint | What it shows |
+|---|---|
+| `GET /` and `GET /docs` | Landing page and interactive Swagger UI |
+| `GET /api/<tool>` | Each MCP tool, e.g. `/api/list_violations`, `/api/find_blind_spots/demo-cred` |
+| `POST /api/run_probe_suite?collector=live\|dead` | Simulated probes: 4/4 PASS vs 0/4 |
+| `GET /demo/scenarios`, `POST /demo/scenarios/{name}` | The four seeded scenarios, and replaying one |
+| `POST /demo/windows-event` | Your own rendered Windows event XML (DTDs/entities refused) |
+| `POST /demo/hook` | A Claude Code hook payload, to declare intent before an event |
+| `GET /demo/alerts` | The `alerts.jsonl` the monitor writes |
+
+```bash
+pip install -r requirements-web.txt           # Python 3.10+
+uvicorn web.app:app --port 8000               # or: docker build -t gm-demo . && docker run -p 8000:8000 gm-demo
+python web/smoke.py http://127.0.0.1:8000      # 18 end-to-end checks; also works against the deployed URL
+```
+
+CI (`.github/workflows/ci.yml`) runs the test tiers on Linux, builds the image,
+starts it with an injected `PORT` the way Render does, and runs the same smoke
+checks against the container. Settings: `GM_DEMO_DIR`, `GM_DEMO_POLICY`,
+`GM_DEMO_RESET_MINUTES`, `GM_DEMO_MAX_LOG_BYTES`, `GM_DEMO_RATE_LIMIT`,
+`GM_DEMO_HEARTBEAT_SECONDS`.
 
 ## Testing
 

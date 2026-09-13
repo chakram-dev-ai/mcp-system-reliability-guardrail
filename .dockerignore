@@ -1,0 +1,14 @@
+.git
+.github
+.venv
+venv
+tests
+htmlcov
+.coverage
+.coverage.*
+**/__pycache__
+*.pyc
+*.jsonl
+.gm-canaries
+.gm-canaries-escape
+HANDOFF.md

@@ -1,0 +1,7 @@
+# Hosted demo (web/): an HTTP wrapper over gm.monitor + gm.server fed sample
+# Windows events. Not needed to run the monitor itself. Python 3.10+ (mcp).
+-r requirements.txt
+fastapi>=0.110,<1
+uvicorn>=0.29,<1
+defusedxml>=0.7,<1     # untrusted XML from the internet; the stdlib parser is not safe for that
+httpx>=0.27,<1         # fastapi.testclient, for tests/functional/test_web_demo.py
