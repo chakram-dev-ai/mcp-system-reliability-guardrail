@@ -80,6 +80,11 @@ tests/                   smoke / unit / functional
 
 ## Hosted demo
 
+**Live: [https://guardrail-monitor-demo.onrender.com](https://guardrail-monitor-demo.onrender.com)** · [interactive API docs](https://guardrail-monitor-demo.onrender.com/docs) ·
+[example: an undeclared credential read](https://guardrail-monitor-demo.onrender.com/api/find_blind_spots/demo-cred).
+The free instance sleeps after 15 idle minutes, so the first request after that
+can take up to a minute.
+
 A live prototype reviewers can call without installing anything: the real
 pipeline -- normalizers, `policy.windows.yaml`, session attribution, the
 hash-chained log, and every MCP tool implementation -- behind plain HTTP, fed
